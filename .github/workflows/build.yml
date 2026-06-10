@@ -33,5 +33,6 @@ jobs:
           path: |
             Build/bin/${{ matrix.config }}/*.dll
             Build/bin/${{ matrix.config }}/*.pdb
+            Build/bin/${{ matrix.config }}/*.lib
           retention-days: 7
           compression-level: 9
