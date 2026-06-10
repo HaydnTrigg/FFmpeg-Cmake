@@ -10,6 +10,27 @@ set(FFMPEG_SRC ${CMAKE_SOURCE_DIR}/FFmpeg)
 #   cmake -B build -G "Visual Studio 18 2026" -A x64
 #   cmake --build build --config Release
 
+# ---------------------------------------------------------------------------
+# Build configurations: Debug, Test (release-runtime + /Od + PDB), Release (LTO)
+# ---------------------------------------------------------------------------
+set(CMAKE_CONFIGURATION_TYPES "Debug;Test;Release" CACHE STRING "Available build configurations" FORCE)
+
+# Test: release runtime (/MD), no optimization (/Od), full debug info (/Zi), no assertions
+set(CMAKE_C_FLAGS_TEST             "/MD /Od /Zi /DNDEBUG"    CACHE STRING "C flags for Test"              FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_TEST "/DEBUG /INCREMENTAL:NO"  CACHE STRING "Shared linker flags for Test"  FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_TEST    "/DEBUG /INCREMENTAL:NO"  CACHE STRING "Exe linker flags for Test"     FORCE)
+set(CMAKE_STATIC_LINKER_FLAGS_TEST ""                        CACHE STRING "Static linker flags for Test"  FORCE)
+
+# Release: maximum inlining (/Ob3), intrinsics (/Oi), function-level linking (/Gy),
+# string pooling (/GF), skip security cookies (/GS-), then link dead-code elimination
+# (/OPT:REF) and COMDAT folding (/OPT:ICF). No debug info.
+# Note: MSVC /GL+/LTCG (WPO) is incompatible with CMake's WINDOWS_EXPORT_ALL_SYMBOLS
+# because cmake -E __create_def cannot parse /GL "anonymous" LTCG objects.
+set(CMAKE_C_FLAGS_RELEASE             "/MD /O2 /Ob3 /Oi /Gy /GF /GS- /DNDEBUG" CACHE STRING "C flags for Release"              FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "/OPT:REF /OPT:ICF /INCREMENTAL:NO"       CACHE STRING "Shared linker flags for Release"  FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE    "/OPT:REF /OPT:ICF /INCREMENTAL:NO"       CACHE STRING "Exe linker flags for Release"     FORCE)
+set(CMAKE_STATIC_LINKER_FLAGS_RELEASE ""                                         CACHE STRING "Static linker flags for Release"  FORCE)
+
 
 # ---------------------------------------------------------------------------
 # vcpkg bootstrap/install helpers  (idempotent; used for NASM/YASM and zlib)
