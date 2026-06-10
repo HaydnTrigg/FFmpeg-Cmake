@@ -2235,9 +2235,6 @@ file(GLOB AVCODEC_SRCS
     ${FFMPEG_SRC}/libavcodec/opus/*.c
     ${FFMPEG_SRC}/libavcodec/vvc/*.c
     ${FFMPEG_SRC}/libavcodec/x86/*.c
-    ${FFMPEG_SRC}/libavcodec/x86/hevc/*.c
-    ${FFMPEG_SRC}/libavcodec/x86/vvc/*.c
-    ${FFMPEG_SRC}/libavcodec/x86/h26x/*.c
 )
 
 # Exclude: hardware accelerators, external-lib wrappers,
@@ -2259,6 +2256,15 @@ list(FILTER AVCODEC_SRCS EXCLUDE REGEX [==[/lib[a-z][^/]*\.c$]==])
 list(FILTER AVCODEC_SRCS EXCLUDE REGEX [==[_tablegen\.c$]==])
 
 if(HAVE_X86ASM)
+    # x86 subdirectory C files (dsp_init, etc.) reference NASM symbols at runtime —
+    # only include them when NASM is available
+    file(GLOB _avcodec_x86_sub_c
+        ${FFMPEG_SRC}/libavcodec/x86/hevc/*.c
+        ${FFMPEG_SRC}/libavcodec/x86/vvc/*.c
+        ${FFMPEG_SRC}/libavcodec/x86/h26x/*.c
+    )
+    list(APPEND AVCODEC_SRCS ${_avcodec_x86_sub_c})
+    unset(_avcodec_x86_sub_c)
     file(GLOB AVCODEC_ASM_SRCS ${FFMPEG_SRC}/libavcodec/x86/*.asm)
     list(FILTER AVCODEC_ASM_SRCS EXCLUDE REGEX [==[/(x86inc|x86util)\.asm$]==])
     list(FILTER AVCODEC_ASM_SRCS EXCLUDE REGEX [==[_template\.asm$]==])
@@ -2307,7 +2313,6 @@ endif()
 # ============================================================
 file(GLOB SWR_SRCS
     ${FFMPEG_SRC}/libswresample/*.c
-    ${FFMPEG_SRC}/libswresample/x86/*.c
 )
 list(FILTER SWR_SRCS EXCLUDE REGEX "_template\\.c$")
 list(FILTER SWR_SRCS EXCLUDE REGEX "soxr_resample\\.c$")
@@ -2315,6 +2320,10 @@ list(FILTER SWR_SRCS EXCLUDE REGEX "noise_shaping_data\\.c$")
 list(FILTER SWR_SRCS EXCLUDE REGEX "/w64xmmtest\\.c$")
 
 if(HAVE_X86ASM)
+    file(GLOB _swr_x86_c ${FFMPEG_SRC}/libswresample/x86/*.c)
+    list(FILTER _swr_x86_c EXCLUDE REGEX "/w64xmmtest\\.c$")
+    list(APPEND SWR_SRCS ${_swr_x86_c})
+    unset(_swr_x86_c)
     file(GLOB SWR_ASM_SRCS ${FFMPEG_SRC}/libswresample/x86/*.asm)
     list(APPEND SWR_SRCS ${SWR_ASM_SRCS})
     set(_swr_c_basenames "")
