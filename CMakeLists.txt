@@ -23,15 +23,25 @@ macro(_ffmpeg_vcpkg_ensure)
             set(_vcpkg_root "${CMAKE_SOURCE_DIR}/vcpkg")
         endif()
         if(WIN32)
-            set(_vcpkg_exe     "${_vcpkg_root}/vcpkg.exe")
-            set(_vcpkg_boot    "${_vcpkg_root}/bootstrap-vcpkg.bat")
-            set(_vcpkg_triplet "x64-windows")
+            set(_vcpkg_exe  "${_vcpkg_root}/vcpkg.exe")
+            set(_vcpkg_boot "${_vcpkg_root}/bootstrap-vcpkg.bat")
+            # Tools (NASM) always from x64-windows; libraries match the target platform
+            set(_vcpkg_tool_triplet "x64-windows")
+            if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
+                set(_vcpkg_triplet "x86-windows")
+            elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+                set(_vcpkg_triplet "arm64-windows")
+            else()
+                set(_vcpkg_triplet "x64-windows")
+            endif()
         else()
-            set(_vcpkg_exe     "${_vcpkg_root}/vcpkg")
-            set(_vcpkg_boot    "${_vcpkg_root}/bootstrap-vcpkg.sh")
-            set(_vcpkg_triplet "x64-linux")
+            set(_vcpkg_exe            "${_vcpkg_root}/vcpkg")
+            set(_vcpkg_boot           "${_vcpkg_root}/bootstrap-vcpkg.sh")
+            set(_vcpkg_triplet        "x64-linux")
+            set(_vcpkg_tool_triplet   "x64-linux")
         endif()
-        set(_vcpkg_installed "${_vcpkg_root}/installed/${_vcpkg_triplet}")
+        set(_vcpkg_installed      "${_vcpkg_root}/installed/${_vcpkg_triplet}")
+        set(_vcpkg_tool_installed "${_vcpkg_root}/installed/${_vcpkg_tool_triplet}")
         if(NOT EXISTS "${_vcpkg_exe}")
             find_package(Git QUIET)
             if(Git_FOUND AND NOT EXISTS "${_vcpkg_root}/.git")
@@ -80,65 +90,78 @@ endmacro()
 
 # ---------------------------------------------------------------------------
 # NASM detection  (global search first; fall back to vcpkg tools dir, then download)
+# ARM64 is a cross-compile target — no x86 NASM assembly applies.
 # ---------------------------------------------------------------------------
-_ffmpeg_vcpkg_ensure()
-# Search global PATH, then vcpkg tools (including downloaded nasm-x.y.z subdirs)
-file(GLOB _vcpkg_nasm_hints "${_vcpkg_installed}/tools/nasm/nasm-*/")
-find_program(FFMPEG_NASM_EXECUTABLE
-    NAMES nasm
-    HINTS
-        ${_vcpkg_nasm_hints}
-        "${_vcpkg_installed}/tools/nasm"
-        "${_vcpkg_installed}/tools"
-)
-
-if(FFMPEG_NASM_EXECUTABLE)
-    set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
-    set(_asm_is_yasm 0)
-    message(STATUS "NASM: ${FFMPEG_NASM_EXECUTABLE}")
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+    set(HAVE_X86ASM 0)
 else()
-    # NASM not found — download official win64 binary into vcpkg tools dir
-    set(_nasm_ver "2.16.03")
-    set(_nasm_dir "${_vcpkg_installed}/tools/nasm/nasm-${_nasm_ver}")
-    set(_nasm_zip "${_vcpkg_installed}/tools/nasm/nasm-${_nasm_ver}-win64.zip")
-    if(NOT EXISTS "${_nasm_dir}/nasm.exe")
-        message(STATUS "NASM not found — downloading nasm ${_nasm_ver}")
-        file(MAKE_DIRECTORY "${_vcpkg_installed}/tools/nasm")
-        file(DOWNLOAD
-            "https://www.nasm.us/pub/nasm/releasebuilds/${_nasm_ver}/win64/nasm-${_nasm_ver}-win64.zip"
-            "${_nasm_zip}"
-            STATUS _dl_status
-            SHOW_PROGRESS
-        )
-        list(GET _dl_status 0 _dl_code)
-        if(_dl_code EQUAL 0)
-            execute_process(
-                COMMAND "${CMAKE_COMMAND}" -E tar xf "${_nasm_zip}"
-                WORKING_DIRECTORY "${_vcpkg_installed}/tools/nasm"
-            )
-            file(REMOVE "${_nasm_zip}")
-        else()
-            message(FATAL_ERROR "NASM download failed")
-        endif()
-    endif()
+    _ffmpeg_vcpkg_ensure()
+    # NASM is a build tool — always search the x64-windows tools dir regardless of target platform
+    file(GLOB _vcpkg_nasm_hints "${_vcpkg_tool_installed}/tools/nasm/nasm-*/")
     find_program(FFMPEG_NASM_EXECUTABLE
         NAMES nasm
-        HINTS "${_nasm_dir}"
-        NO_DEFAULT_PATH
+        HINTS
+            ${_vcpkg_nasm_hints}
+            "${_vcpkg_tool_installed}/tools/nasm"
+            "${_vcpkg_tool_installed}/tools"
     )
+
     if(FFMPEG_NASM_EXECUTABLE)
         set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
         set(_asm_is_yasm 0)
-        message(STATUS "NASM (downloaded): ${FFMPEG_NASM_EXECUTABLE}")
+        message(STATUS "NASM: ${FFMPEG_NASM_EXECUTABLE}")
+    else()
+        # NASM not found — download official win64 binary into vcpkg tools dir
+        set(_nasm_ver "2.16.03")
+        set(_nasm_dir "${_vcpkg_tool_installed}/tools/nasm/nasm-${_nasm_ver}")
+        set(_nasm_zip "${_vcpkg_tool_installed}/tools/nasm/nasm-${_nasm_ver}-win64.zip")
+        if(NOT EXISTS "${_nasm_dir}/nasm.exe")
+            message(STATUS "NASM not found — downloading nasm ${_nasm_ver}")
+            file(MAKE_DIRECTORY "${_vcpkg_tool_installed}/tools/nasm")
+            file(DOWNLOAD
+                "https://www.nasm.us/pub/nasm/releasebuilds/${_nasm_ver}/win64/nasm-${_nasm_ver}-win64.zip"
+                "${_nasm_zip}"
+                STATUS _dl_status
+                SHOW_PROGRESS
+            )
+            list(GET _dl_status 0 _dl_code)
+            if(_dl_code EQUAL 0)
+                execute_process(
+                    COMMAND "${CMAKE_COMMAND}" -E tar xf "${_nasm_zip}"
+                    WORKING_DIRECTORY "${_vcpkg_tool_installed}/tools/nasm"
+                )
+                file(REMOVE "${_nasm_zip}")
+            else()
+                message(FATAL_ERROR "NASM download failed")
+            endif()
+        endif()
+        find_program(FFMPEG_NASM_EXECUTABLE
+            NAMES nasm
+            HINTS "${_nasm_dir}"
+            NO_DEFAULT_PATH
+        )
+        if(FFMPEG_NASM_EXECUTABLE)
+            set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
+            set(_asm_is_yasm 0)
+            message(STATUS "NASM (downloaded): ${FFMPEG_NASM_EXECUTABLE}")
+        endif()
     endif()
-endif()
 
-if(NOT DEFINED _asm_exe)
-    message(FATAL_ERROR "NASM assembler not found and could not be downloaded")
-endif()
+    if(NOT DEFINED _asm_exe)
+        message(FATAL_ERROR "NASM assembler not found and could not be downloaded")
+    endif()
 
-# Generate config.asm before enable_language so it exists for the compiler test
-file(WRITE "${CMAKE_BINARY_DIR}/config.asm" [=[
+    # Win32 vs x64 differ in ARCH_X86_32 / ARCH_X86_64
+    if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
+        set(_arch_x86_32 1)
+        set(_arch_x86_64 0)
+    else()
+        set(_arch_x86_32 0)
+        set(_arch_x86_64 1)
+    endif()
+
+    # Generate config.asm before enable_language so it exists for the compiler test
+    file(WRITE "${CMAKE_BINARY_DIR}/config.asm" [=[
 %define ARCH_X86    1
 %define ARCH_X86_32 0
 %define ARCH_X86_64 1
@@ -164,10 +187,22 @@ file(WRITE "${CMAKE_BINARY_DIR}/config.asm" [=[
 %define HAVE_AMD3DNOWEXT_EXTERNAL 0
 %define HAVE_MMX_INLINE          0
 ]=])
-set(CMAKE_ASM_NASM_COMPILER "${_asm_exe}" CACHE FILEPATH "NASM assembler" FORCE)
-set(CMAKE_ASM_NASM_FLAGS "-P${CMAKE_BINARY_DIR}/config.asm")
-enable_language(ASM_NASM)
-set(HAVE_X86ASM 1)
+    # Patch the two arch flags that differ between Win32 and x64
+    file(READ "${CMAKE_BINARY_DIR}/config.asm" _asm_tmp)
+    string(REPLACE "%define ARCH_X86_32 0" "%define ARCH_X86_32 ${_arch_x86_32}" _asm_tmp "${_asm_tmp}")
+    string(REPLACE "%define ARCH_X86_64 1" "%define ARCH_X86_64 ${_arch_x86_64}" _asm_tmp "${_asm_tmp}")
+    file(WRITE "${CMAKE_BINARY_DIR}/config.asm" "${_asm_tmp}")
+    unset(_asm_tmp)
+
+    set(CMAKE_ASM_NASM_COMPILER "${_asm_exe}" CACHE FILEPATH "NASM assembler" FORCE)
+    if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
+        set(CMAKE_ASM_NASM_FLAGS "-P${CMAKE_BINARY_DIR}/config.asm -DPREFIX")
+    else()
+        set(CMAKE_ASM_NASM_FLAGS "-P${CMAKE_BINARY_DIR}/config.asm")
+    endif()
+    enable_language(ASM_NASM)
+    set(HAVE_X86ASM 1)
+endif()
 
 # ---------------------------------------------------------------------------
 # VS/NASM fix: CMake's VS generator writes <ObjectFileName> for NASM items,
@@ -185,6 +220,13 @@ if(MSVC AND HAVE_X86ASM)
   <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
           Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
           Label="LocalAppDataPlatform"/>
+  <!-- Force win32 output format on 32-bit builds so NASM defines WIN32 (not WIN64),
+       enabling the underscore prefix for C symbol decoration in x86util.asm. -->
+  <ItemDefinitionGroup Condition="'$(Platform)' == 'Win32'">
+    <NASM>
+      <Outputswitch>0</Outputswitch>
+    </NASM>
+  </ItemDefinitionGroup>
   <!-- Create NASM output subdirectories before assembling (NASM won't do it).
        OutputFormat is set per-item by CMake (via VS_SETTINGS), so %(OutputFormat)
        is non-empty and the MakeDir transform works correctly. -->
@@ -218,6 +260,7 @@ if(MSVC)
         $<$<COMPILE_LANGUAGE:C>:/wd4101>
         $<$<COMPILE_LANGUAGE:C>:/wd4113>
         $<$<COMPILE_LANGUAGE:C>:/wd4133>
+        $<$<COMPILE_LANGUAGE:C>:/wd4146>
         $<$<COMPILE_LANGUAGE:C>:/wd4244>
         $<$<COMPILE_LANGUAGE:C>:/wd4267>
         $<$<COMPILE_LANGUAGE:C>:/wd4305>
@@ -610,6 +653,11 @@ if(HAVE_X86ASM)
     string(REPLACE "#define HAVE_SSE4_EXTERNAL     0" "#define HAVE_SSE4_EXTERNAL     1" _cfg "${_cfg}")
     string(REPLACE "#define HAVE_SSE42_EXTERNAL    0" "#define HAVE_SSE42_EXTERNAL    1" _cfg "${_cfg}")
     string(REPLACE "#define HAVE_SSSE3_EXTERNAL    0" "#define HAVE_SSSE3_EXTERNAL    1" _cfg "${_cfg}")
+    # Patch ARCH_X86_32/64 to match the build platform
+    if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
+        string(REPLACE "#define ARCH_X86_32  0" "#define ARCH_X86_32  1" _cfg "${_cfg}")
+        string(REPLACE "#define ARCH_X86_64  1" "#define ARCH_X86_64  0" _cfg "${_cfg}")
+    endif()
     file(WRITE "${CMAKE_BINARY_DIR}/config.h" "${_cfg}")
 endif()
 
@@ -2312,6 +2360,9 @@ target_link_libraries(swresample PRIVATE avutil)
 # ---------------------------------------------------------------------------
 # zlib: try to find globally first, fall back to vcpkg
 # ---------------------------------------------------------------------------
+# Ensure the platform-specific vcpkg library path is searched first for ZLIB
+_ffmpeg_vcpkg_ensure()
+list(PREPEND CMAKE_PREFIX_PATH "${_vcpkg_installed}")
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
     message(STATUS "ZLIB not found globally — fetching from vcpkg")

@@ -7,12 +7,13 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.config }}
+    name: ${{ matrix.arch }} / ${{ matrix.config }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         config: [Debug, Release, RelWithDebInfo, MinSizeRel]
+        arch: [Win32, x64, ARM64]
 
     steps:
       - uses: actions/checkout@v6
@@ -20,7 +21,7 @@ jobs:
           submodules: recursive
 
       - name: Configure
-        run: cmake -B Build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B Build -G "Visual Studio 17 2022" -A ${{ matrix.arch }}
 
       - name: Build
         run: cmake --build Build --config ${{ matrix.config }} --parallel
@@ -28,7 +29,7 @@ jobs:
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: ffmpeg-${{ matrix.config }}
+          name: ffmpeg-${{ matrix.arch }}-${{ matrix.config }}
           path: Build/bin/${{ matrix.config }}/*.dll
           retention-days: 7
           compression-level: 9
