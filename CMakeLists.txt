@@ -10,7 +10,6 @@ set(FFMPEG_SRC ${CMAKE_SOURCE_DIR}/FFmpeg)
 #   cmake -B build -G "Visual Studio 18 2026" -A x64
 #   cmake --build build --config Release
 
-option(FFMPEG_ENABLE_NASM "Use NASM for x86_64 assembly optimizations" ON)
 
 # ---------------------------------------------------------------------------
 # vcpkg bootstrap/install helpers  (idempotent; used for NASM/YASM and zlib)
@@ -18,7 +17,7 @@ option(FFMPEG_ENABLE_NASM "Use NASM for x86_64 assembly optimizations" ON)
 # ---------------------------------------------------------------------------
 macro(_ffmpeg_vcpkg_ensure)
     if(NOT DEFINED _vcpkg_bootstrapped)
-        if(DEFINED ENV{VCPKG_ROOT})
+        if(DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
             set(_vcpkg_root "$ENV{VCPKG_ROOT}")
         else()
             set(_vcpkg_root "${CMAKE_SOURCE_DIR}/vcpkg")
@@ -80,53 +79,123 @@ macro(_ffmpeg_vcpkg_install _pkg)
 endmacro()
 
 # ---------------------------------------------------------------------------
-# NASM / YASM detection  (global search first; fall back to vcpkg YASM)
+# NASM detection  (global search first; fall back to vcpkg tools dir, then download)
 # ---------------------------------------------------------------------------
-if(FFMPEG_ENABLE_NASM)
-    find_program(FFMPEG_NASM_EXECUTABLE NAMES nasm)
-    find_program(FFMPEG_YASM_EXECUTABLE NAMES yasm)
+_ffmpeg_vcpkg_ensure()
+# Search global PATH, then vcpkg tools (including downloaded nasm-x.y.z subdirs)
+file(GLOB _vcpkg_nasm_hints "${_vcpkg_installed}/tools/nasm/nasm-*/")
+find_program(FFMPEG_NASM_EXECUTABLE
+    NAMES nasm
+    HINTS
+        ${_vcpkg_nasm_hints}
+        "${_vcpkg_installed}/tools/nasm"
+        "${_vcpkg_installed}/tools"
+)
 
+if(FFMPEG_NASM_EXECUTABLE)
+    set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
+    set(_asm_is_yasm 0)
+    message(STATUS "NASM: ${FFMPEG_NASM_EXECUTABLE}")
+else()
+    # NASM not found — download official win64 binary into vcpkg tools dir
+    set(_nasm_ver "2.16.03")
+    set(_nasm_dir "${_vcpkg_installed}/tools/nasm/nasm-${_nasm_ver}")
+    set(_nasm_zip "${_vcpkg_installed}/tools/nasm/nasm-${_nasm_ver}-win64.zip")
+    if(NOT EXISTS "${_nasm_dir}/nasm.exe")
+        message(STATUS "NASM not found — downloading nasm ${_nasm_ver}")
+        file(MAKE_DIRECTORY "${_vcpkg_installed}/tools/nasm")
+        file(DOWNLOAD
+            "https://www.nasm.us/pub/nasm/releasebuilds/${_nasm_ver}/win64/nasm-${_nasm_ver}-win64.zip"
+            "${_nasm_zip}"
+            STATUS _dl_status
+            SHOW_PROGRESS
+        )
+        list(GET _dl_status 0 _dl_code)
+        if(_dl_code EQUAL 0)
+            execute_process(
+                COMMAND "${CMAKE_COMMAND}" -E tar xf "${_nasm_zip}"
+                WORKING_DIRECTORY "${_vcpkg_installed}/tools/nasm"
+            )
+            file(REMOVE "${_nasm_zip}")
+        else()
+            message(FATAL_ERROR "NASM download failed")
+        endif()
+    endif()
+    find_program(FFMPEG_NASM_EXECUTABLE
+        NAMES nasm
+        HINTS "${_nasm_dir}"
+        NO_DEFAULT_PATH
+    )
     if(FFMPEG_NASM_EXECUTABLE)
         set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
         set(_asm_is_yasm 0)
-        message(STATUS "NASM: ${FFMPEG_NASM_EXECUTABLE}")
-    elseif(FFMPEG_YASM_EXECUTABLE)
-        set(_asm_exe     "${FFMPEG_YASM_EXECUTABLE}")
-        set(_asm_is_yasm 1)
-        message(STATUS "YASM: ${FFMPEG_YASM_EXECUTABLE}")
-    else()
-        message(STATUS "NASM/YASM not found globally — fetching YASM from vcpkg")
-        _ffmpeg_vcpkg_install("yasm")
-        find_program(FFMPEG_YASM_EXECUTABLE
-            NAMES yasm
-            HINTS
-                "${_vcpkg_installed}/tools/yasm"
-                "${_vcpkg_installed}/tools"
-                "${_vcpkg_installed}/bin"
-            NO_DEFAULT_PATH
-        )
-        if(FFMPEG_YASM_EXECUTABLE)
-            set(_asm_exe     "${FFMPEG_YASM_EXECUTABLE}")
-            set(_asm_is_yasm 1)
-            message(STATUS "YASM (vcpkg): ${FFMPEG_YASM_EXECUTABLE}")
-        endif()
+        message(STATUS "NASM (downloaded): ${FFMPEG_NASM_EXECUTABLE}")
     endif()
+endif()
 
-    if(DEFINED _asm_exe)
-        set(CMAKE_ASM_NASM_COMPILER "${_asm_exe}" CACHE FILEPATH "ASM compiler (NASM or YASM)" FORCE)
-        enable_language(ASM_NASM)
-        set(HAVE_X86ASM 1)
-        if(_asm_is_yasm)
-            set(CMAKE_ASM_NASM_FLAGS "-f win64 -m amd64 -DWIN64 -DPIC")
-        else()
-            set(CMAKE_ASM_NASM_FLAGS "-f win64 -DWIN64 -DPIC")
-        endif()
-    else()
-        set(HAVE_X86ASM 0)
-        message(STATUS "No assembler found — assembly optimizations disabled")
-    endif()
-else()
-    set(HAVE_X86ASM 0)
+if(NOT DEFINED _asm_exe)
+    message(FATAL_ERROR "NASM assembler not found and could not be downloaded")
+endif()
+
+# Generate config.asm before enable_language so it exists for the compiler test
+file(WRITE "${CMAKE_BINARY_DIR}/config.asm" [=[
+%define ARCH_X86    1
+%define ARCH_X86_32 0
+%define ARCH_X86_64 1
+%define HAVE_ALIGNED_STACK       1
+%define HAVE_MMX_EXTERNAL        1
+%define HAVE_MMXEXT_EXTERNAL     1
+%define HAVE_SSE_EXTERNAL        1
+%define HAVE_SSE2_EXTERNAL       1
+%define HAVE_SSE3_EXTERNAL       1
+%define HAVE_SSSE3_EXTERNAL      1
+%define HAVE_SSE4_EXTERNAL       1
+%define HAVE_SSE42_EXTERNAL      1
+%define HAVE_AVX_EXTERNAL        1
+%define HAVE_AVX2_EXTERNAL       1
+%define HAVE_FMA3_EXTERNAL       1
+%define HAVE_FMA4_EXTERNAL       1
+%define HAVE_XOP_EXTERNAL        1
+%define HAVE_AVX512_EXTERNAL     1
+%define HAVE_AVX512ICL_EXTERNAL  1
+%define HAVE_AVXVNNI_EXTERNAL    0
+%define HAVE_AESNI_EXTERNAL      0
+%define HAVE_AMD3DNOW_EXTERNAL   0
+%define HAVE_AMD3DNOWEXT_EXTERNAL 0
+%define HAVE_MMX_INLINE          0
+]=])
+set(CMAKE_ASM_NASM_COMPILER "${_asm_exe}" CACHE FILEPATH "NASM assembler" FORCE)
+set(CMAKE_ASM_NASM_FLAGS "-P${CMAKE_BINARY_DIR}/config.asm")
+enable_language(ASM_NASM)
+set(HAVE_X86ASM 1)
+
+# ---------------------------------------------------------------------------
+# VS/NASM fix: CMake's VS generator writes <ObjectFileName> for NASM items,
+# but nasm.targets uses %(NASM.OutputFormat) as both the Outputs= incremental
+# check and the -o flag. With OutputFormat empty, MSBuild sees Outputs="" +
+# non-empty Inputs and skips _NASM as "up-to-date" forever.
+# The props file below maps OutputFormat to ObjectFileName so the check works,
+# and creates the output subdirectories that NASM won't create itself.
+# ---------------------------------------------------------------------------
+if(MSVC AND HAVE_X86ASM)
+    file(WRITE "${CMAKE_BINARY_DIR}/nasm_vs_fix.props" [=[
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Re-import the default user props so we don't lose platform settings. -->
+  <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+          Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+          Label="LocalAppDataPlatform"/>
+  <!-- Create NASM output subdirectories before assembling (NASM won't do it).
+       OutputFormat is set per-item by CMake (via VS_SETTINGS), so %(OutputFormat)
+       is non-empty and the MakeDir transform works correctly. -->
+  <Target Name="_NASMMakeOutputDirs" BeforeTargets="_NASM" Condition="'@(NASM)' != ''">
+    <ItemGroup>
+      <_NASMOutFile Include="@(NASM->'%(OutputFormat)')"/>
+    </ItemGroup>
+    <MakeDir Directories="@(_NASMOutFile->'%(RootDir)%(Directory)')"/>
+  </Target>
+</Project>
+]=])
 endif()
 
 # ---------------------------------------------------------------------------
@@ -141,40 +210,36 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # ---------------------------------------------------------------------------
 if(MSVC)
     add_compile_options(
-        /MP       # parallel file compilation
-        /W3
-        /wd4018   # signed/unsigned mismatch
-        /wd4028   # formal parameter different from declaration
-        /wd4090   # different const qualifiers
-        /wd4101   # unreferenced local variable
-        /wd4113   # incompatible function pointer
-        /wd4133   # incompatible types
-        /wd4244   # conversion, possible loss of data
-        /wd4267   # conversion from size_t
-        /wd4305   # truncation double to float
-        /wd4334   # 32-bit shift result not 64-bit
-        /wd4477   # format string type mismatch
-        /wd4700   # uninitialized local variable used
-        /wd4715   # not all control paths return value
-        /wd4723   # potential divide by zero
-        /wd4996   # deprecated CRT functions
-        /std:c11
-        /fp:fast
+        $<$<COMPILE_LANGUAGE:C>:/MP>
+        $<$<COMPILE_LANGUAGE:C>:/W3>
+        $<$<COMPILE_LANGUAGE:C>:/wd4018>
+        $<$<COMPILE_LANGUAGE:C>:/wd4028>
+        $<$<COMPILE_LANGUAGE:C>:/wd4090>
+        $<$<COMPILE_LANGUAGE:C>:/wd4101>
+        $<$<COMPILE_LANGUAGE:C>:/wd4113>
+        $<$<COMPILE_LANGUAGE:C>:/wd4133>
+        $<$<COMPILE_LANGUAGE:C>:/wd4244>
+        $<$<COMPILE_LANGUAGE:C>:/wd4267>
+        $<$<COMPILE_LANGUAGE:C>:/wd4305>
+        $<$<COMPILE_LANGUAGE:C>:/wd4334>
+        $<$<COMPILE_LANGUAGE:C>:/wd4477>
+        $<$<COMPILE_LANGUAGE:C>:/wd4700>
+        $<$<COMPILE_LANGUAGE:C>:/wd4715>
+        $<$<COMPILE_LANGUAGE:C>:/wd4723>
+        $<$<COMPILE_LANGUAGE:C>:/wd4996>
+        $<$<COMPILE_LANGUAGE:C>:/std:c11>
+        $<$<COMPILE_LANGUAGE:C>:/fp:fast>
     )
     add_compile_definitions(
-        _CRT_SECURE_NO_WARNINGS
-        _CRT_NONSTDC_NO_DEPRECATE
-        _USE_MATH_DEFINES
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        # map C99 'restrict' to MSVC '__restrict'
-        "restrict=__restrict"
-        # Enable FFmpeg's internal config.h guard in all public headers
-        HAVE_AV_CONFIG_H
+        $<$<COMPILE_LANGUAGE:C>:_CRT_SECURE_NO_WARNINGS>
+        $<$<COMPILE_LANGUAGE:C>:_CRT_NONSTDC_NO_DEPRECATE>
+        $<$<COMPILE_LANGUAGE:C>:_USE_MATH_DEFINES>
+        $<$<COMPILE_LANGUAGE:C>:WIN32_LEAN_AND_MEAN>
+        $<$<COMPILE_LANGUAGE:C>:NOMINMAX>
+        "$<$<COMPILE_LANGUAGE:C>:restrict=__restrict>"
+        $<$<COMPILE_LANGUAGE:C>:HAVE_AV_CONFIG_H>
+        $<$<COMPILE_LANGUAGE:C>:_LARGEFILE64_SOURCE=0>
     )
-    # Prevent zlib's zconf.h from including unistd.h on Windows
-    # (zconf.h #undefs _LARGEFILE64_SOURCE when it's defined as 0)
-    add_compile_definitions(_LARGEFILE64_SOURCE=0)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -524,11 +589,27 @@ file(WRITE "${CMAKE_BINARY_DIR}/config.h" [=[
 #endif /* FFMPEG_CONFIG_H */
 ]=])
 
-# Patch HAVE_X86ASM into config.h after writing it
+# Patch HAVE_X86ASM and HAVE_*_EXTERNAL into config.h after writing it
 if(HAVE_X86ASM)
     file(READ "${CMAKE_BINARY_DIR}/config.h" _cfg)
     string(REPLACE "#define HAVE_X86ASM       0" "#define HAVE_X86ASM       1" _cfg "${_cfg}")
     string(REPLACE "#define HAVE_NASM         HAVE_X86ASM" "#define HAVE_NASM         1" _cfg "${_cfg}")
+    # Enable external-ASM feature flags to match config.asm
+    string(REPLACE "#define HAVE_AVX_EXTERNAL      0" "#define HAVE_AVX_EXTERNAL      1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_AVX2_EXTERNAL     0" "#define HAVE_AVX2_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_AVX512_EXTERNAL   0" "#define HAVE_AVX512_EXTERNAL   1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_AVX512ICL_EXTERNAL 0" "#define HAVE_AVX512ICL_EXTERNAL 1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_FMA3_EXTERNAL     0" "#define HAVE_FMA3_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_FMA4_EXTERNAL     0" "#define HAVE_FMA4_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_XOP_EXTERNAL      0" "#define HAVE_XOP_EXTERNAL      1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_MMX_EXTERNAL      0" "#define HAVE_MMX_EXTERNAL      1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_MMXEXT_EXTERNAL   0" "#define HAVE_MMXEXT_EXTERNAL   1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSE_EXTERNAL      0" "#define HAVE_SSE_EXTERNAL      1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSE2_EXTERNAL     0" "#define HAVE_SSE2_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSE3_EXTERNAL     0" "#define HAVE_SSE3_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSE4_EXTERNAL     0" "#define HAVE_SSE4_EXTERNAL     1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSE42_EXTERNAL    0" "#define HAVE_SSE42_EXTERNAL    1" _cfg "${_cfg}")
+    string(REPLACE "#define HAVE_SSSE3_EXTERNAL    0" "#define HAVE_SSSE3_EXTERNAL    1" _cfg "${_cfg}")
     file(WRITE "${CMAKE_BINARY_DIR}/config.h" "${_cfg}")
 endif()
 
@@ -1583,6 +1664,15 @@ file(WRITE "${CMAKE_BINARY_DIR}/config_components.h" [=[
 #endif /* FFMPEG_CONFIG_COMPONENTS_H */
 ]=])
 
+# Generate config_components.asm for NASM (same defines, %define syntax)
+if(HAVE_X86ASM)
+    file(READ "${CMAKE_BINARY_DIR}/config_components.h" _cc_h)
+    string(REGEX MATCHALL "#define CONFIG_[A-Z0-9_]+ [01]" _cc_defs "${_cc_h}")
+    string(REPLACE ";" "\n" _cc_defs "${_cc_defs}")
+    string(REPLACE "#define " "%define " _cc_defs "${_cc_defs}")
+    file(WRITE "${CMAKE_BINARY_DIR}/config_components.asm" "; Automatically generated - do not modify!\n${_cc_defs}\n")
+endif()
+
 # ---------------------------------------------------------------------------
 # Generate codec_list.c, parser_list.c, bsf_list.c into build/libavcodec/
 # (allcodecs.c / parsers.c / bitstream_filters.c use  #include "libavcodec/X")
@@ -2042,11 +2132,45 @@ else()
     list(FILTER AVUTIL_SRCS EXCLUDE REGEX "/x86/[^/]*_init\\.c$")
 endif()
 
+# Set OutputFormat per NASM source so nasm.targets' Outputs= batching check
+# fires correctly (CMake's VS generator writes <ObjectFileName> but nasm.targets
+# uses %(NASM.OutputFormat) for the incremental Outputs= check).
+# Mirror CMake's own conflict logic: when an .asm and a .c file share the same
+# base name, CMake sets <ObjectFileName> to the full-path .asm.obj form; otherwise
+# the default flat $(IntDir)/basename.obj is used and we match that here.
+if(MSVC AND HAVE_X86ASM)
+    set(_avutil_c_basenames "")
+    foreach(_s IN LISTS AVUTIL_SRCS)
+        if(_s MATCHES "\\.c$")
+            get_filename_component(_bn "${_s}" NAME_WE)
+            list(APPEND _avutil_c_basenames "${_bn}")
+        endif()
+    endforeach()
+    foreach(_src IN LISTS AVUTIL_SRCS)
+        if(_src MATCHES "\\.asm$")
+            get_filename_component(_bn "${_src}" NAME_WE)
+            if("${_bn}" IN_LIST _avutil_c_basenames)
+                file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_src}")
+                set_source_files_properties("${_src}" PROPERTIES
+                    VS_SETTINGS "OutputFormat=$(IntDir)/${_rel}.obj")
+            else()
+                set_source_files_properties("${_src}" PROPERTIES
+                    VS_SETTINGS "OutputFormat=$(IntDir)/${_bn}.obj")
+            endif()
+        endif()
+    endforeach()
+    unset(_avutil_c_basenames)
+endif()
+
 add_library(avutil SHARED ${AVUTIL_SRCS})
 set_target_properties(avutil PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(MSVC AND HAVE_X86ASM)
+    set_target_properties(avutil PROPERTIES VS_USER_PROPS "${CMAKE_BINARY_DIR}/nasm_vs_fix.props")
+endif()
 target_include_directories(avutil PRIVATE
     ${CMAKE_BINARY_DIR}
     ${FFMPEG_SRC}
+    ${FFMPEG_SRC}/libavutil/x86
     ${FFMPEG_SRC}/compat/atomics/win32
 )
 target_link_libraries(avutil PRIVATE ws2_32 ole32 user32 bcrypt)
@@ -2063,6 +2187,9 @@ file(GLOB AVCODEC_SRCS
     ${FFMPEG_SRC}/libavcodec/opus/*.c
     ${FFMPEG_SRC}/libavcodec/vvc/*.c
     ${FFMPEG_SRC}/libavcodec/x86/*.c
+    ${FFMPEG_SRC}/libavcodec/x86/hevc/*.c
+    ${FFMPEG_SRC}/libavcodec/x86/vvc/*.c
+    ${FFMPEG_SRC}/libavcodec/x86/h26x/*.c
 )
 
 # Exclude: hardware accelerators, external-lib wrappers,
@@ -2086,6 +2213,16 @@ list(FILTER AVCODEC_SRCS EXCLUDE REGEX [==[_tablegen\.c$]==])
 if(HAVE_X86ASM)
     file(GLOB AVCODEC_ASM_SRCS ${FFMPEG_SRC}/libavcodec/x86/*.asm)
     list(FILTER AVCODEC_ASM_SRCS EXCLUDE REGEX [==[/(x86inc|x86util)\.asm$]==])
+    list(FILTER AVCODEC_ASM_SRCS EXCLUDE REGEX [==[_template\.asm$]==])
+    # hevc/vvc/h26x subdirectory asm files
+    file(GLOB _hevc_asm  ${FFMPEG_SRC}/libavcodec/x86/hevc/*.asm)
+    file(GLOB _vvc_asm   ${FFMPEG_SRC}/libavcodec/x86/vvc/*.asm)
+    # h2656_sao*.asm are %include templates (not standalone objects); only h2656_inter.asm compiles
+    set(_h26x_asm ${FFMPEG_SRC}/libavcodec/x86/h26x/h2656_inter.asm)
+    list(APPEND AVCODEC_ASM_SRCS ${_hevc_asm} ${_vvc_asm} ${_h26x_asm})
+    unset(_hevc_asm)
+    unset(_vvc_asm)
+    unset(_h26x_asm)
     list(APPEND AVCODEC_SRCS ${AVCODEC_ASM_SRCS})
 else()
     # Exclude all x86 *_init.c files: most have static NASM wrapper functions or
@@ -2120,13 +2257,44 @@ endif()
 # ============================================================
 # libswresample  (needed by avcodec for the opus decoder)
 # ============================================================
-file(GLOB SWR_SRCS ${FFMPEG_SRC}/libswresample/*.c)
+file(GLOB SWR_SRCS
+    ${FFMPEG_SRC}/libswresample/*.c
+    ${FFMPEG_SRC}/libswresample/x86/*.c
+)
 list(FILTER SWR_SRCS EXCLUDE REGEX "_template\\.c$")
 list(FILTER SWR_SRCS EXCLUDE REGEX "soxr_resample\\.c$")
 list(FILTER SWR_SRCS EXCLUDE REGEX "noise_shaping_data\\.c$")
+list(FILTER SWR_SRCS EXCLUDE REGEX "/w64xmmtest\\.c$")
+
+if(HAVE_X86ASM)
+    file(GLOB SWR_ASM_SRCS ${FFMPEG_SRC}/libswresample/x86/*.asm)
+    list(APPEND SWR_SRCS ${SWR_ASM_SRCS})
+    set(_swr_c_basenames "")
+    foreach(_s IN LISTS SWR_SRCS)
+        if(_s MATCHES "\\.c$")
+            get_filename_component(_bn "${_s}" NAME_WE)
+            list(APPEND _swr_c_basenames "${_bn}")
+        endif()
+    endforeach()
+    foreach(_src IN LISTS SWR_ASM_SRCS)
+        get_filename_component(_bn "${_src}" NAME_WE)
+        if("${_bn}" IN_LIST _swr_c_basenames)
+            file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_src}")
+            set_source_files_properties("${_src}" PROPERTIES
+                VS_SETTINGS "OutputFormat=$(IntDir)/${_rel}.obj")
+        else()
+            set_source_files_properties("${_src}" PROPERTIES
+                VS_SETTINGS "OutputFormat=$(IntDir)/${_bn}.obj")
+        endif()
+    endforeach()
+    unset(_swr_c_basenames)
+endif()
 
 add_library(swresample SHARED ${SWR_SRCS})
 set_target_properties(swresample PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(MSVC AND HAVE_X86ASM)
+    set_target_properties(swresample PROPERTIES VS_USER_PROPS "${CMAKE_BINARY_DIR}/nasm_vs_fix.props")
+endif()
 target_include_directories(swresample PRIVATE
     ${CMAKE_BINARY_DIR}
     ${FFMPEG_SRC}
@@ -2152,14 +2320,52 @@ if(NOT ZLIB_FOUND)
 endif()
 message(STATUS "ZLIB: ${ZLIB_INCLUDE_DIRS}")
 
+if(MSVC AND HAVE_X86ASM)
+    # Detect basename collisions across ALL source files (C vs ASM and ASM vs ASM).
+    # Any basename that appears more than once gets a full relative path so obj files
+    # don't overwrite each other (e.g. hevc/mc.asm and vvc/mc.asm both have bn "mc").
+    set(_avcodec_seen_basenames "")
+    set(_avcodec_conflict_basenames "")
+    foreach(_s IN LISTS AVCODEC_SRCS)
+        if(_s MATCHES "\\.(c|asm)$")
+            get_filename_component(_bn "${_s}" NAME_WE)
+            if("${_bn}" IN_LIST _avcodec_seen_basenames)
+                list(APPEND _avcodec_conflict_basenames "${_bn}")
+            else()
+                list(APPEND _avcodec_seen_basenames "${_bn}")
+            endif()
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _avcodec_conflict_basenames)
+    foreach(_src IN LISTS AVCODEC_SRCS)
+        if(_src MATCHES "\\.asm$")
+            get_filename_component(_bn "${_src}" NAME_WE)
+            if("${_bn}" IN_LIST _avcodec_conflict_basenames)
+                file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_src}")
+                set_source_files_properties("${_src}" PROPERTIES
+                    VS_SETTINGS "OutputFormat=$(IntDir)/${_rel}.obj")
+            else()
+                set_source_files_properties("${_src}" PROPERTIES
+                    VS_SETTINGS "OutputFormat=$(IntDir)/${_bn}.obj")
+            endif()
+        endif()
+    endforeach()
+    unset(_avcodec_seen_basenames)
+    unset(_avcodec_conflict_basenames)
+endif()
+
 add_library(avcodec SHARED ${AVCODEC_SRCS}
     ${FFMPEG_SRC}/libavcodec/opus/dec.c)
 set_target_properties(avcodec PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(MSVC AND HAVE_X86ASM)
+    set_target_properties(avcodec PROPERTIES VS_USER_PROPS "${CMAKE_BINARY_DIR}/nasm_vs_fix.props")
+endif()
 
 target_include_directories(avcodec PRIVATE
     ${CMAKE_BINARY_DIR}
     ${FFMPEG_SRC}
     ${FFMPEG_SRC}/libavcodec
+    ${FFMPEG_SRC}/libavcodec/x86
     ${FFMPEG_SRC}/compat/atomics/win32
     ${ZLIB_INCLUDE_DIRS}
 )

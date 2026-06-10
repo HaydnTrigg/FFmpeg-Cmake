@@ -1,0 +1,34 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build:
+    name: ${{ matrix.config }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release, RelWithDebInfo, MinSizeRel]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -B Build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build Build --config ${{ matrix.config }} --parallel
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.config }}
+          path: Build/bin/${{ matrix.config }}/*.dll
+          retention-days: 7
+          compression-level: 9
