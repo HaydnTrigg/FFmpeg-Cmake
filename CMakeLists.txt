@@ -2044,20 +2044,84 @@ target_link_libraries(swresample PRIVATE avutil)
 # (Simpler: just re-add opus/dec.c and link swresample into avcodec.)
 # ============================================================
 
+# ---------------------------------------------------------------------------
+# zlib: try to find globally first, fall back to vcpkg
+# ---------------------------------------------------------------------------
+find_package(ZLIB QUIET)
+if(NOT ZLIB_FOUND)
+    message(STATUS "ZLIB not found via find_package — trying vcpkg")
+
+    if(NOT DEFINED VCPKG_ROOT AND DEFINED ENV{VCPKG_ROOT})
+        set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
+    elseif(NOT DEFINED VCPKG_ROOT)
+        set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/vcpkg")
+    endif()
+
+    if(WIN32)
+        set(_vcpkg_exe     "${VCPKG_ROOT}/vcpkg.exe")
+        set(_vcpkg_boot    "${VCPKG_ROOT}/bootstrap-vcpkg.bat")
+        set(_vcpkg_triplet "x64-windows")
+    else()
+        set(_vcpkg_exe     "${VCPKG_ROOT}/vcpkg")
+        set(_vcpkg_boot    "${VCPKG_ROOT}/bootstrap-vcpkg.sh")
+        set(_vcpkg_triplet "x64-linux")
+    endif()
+
+    if(NOT EXISTS "${_vcpkg_exe}")
+        find_package(Git QUIET)
+        if(Git_FOUND AND NOT EXISTS "${VCPKG_ROOT}/.git")
+            message(STATUS "Cloning vcpkg into ${VCPKG_ROOT}")
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+                RESULT_VARIABLE _clone_result
+            )
+            if(NOT _clone_result EQUAL 0)
+                message(FATAL_ERROR "Failed to clone vcpkg. Install vcpkg manually or set VCPKG_ROOT.")
+            endif()
+        endif()
+        if(EXISTS "${_vcpkg_boot}")
+            message(STATUS "Bootstrapping vcpkg")
+            execute_process(
+                COMMAND "${_vcpkg_boot}" -disableMetrics
+                WORKING_DIRECTORY "${VCPKG_ROOT}"
+                RESULT_VARIABLE _boot_result
+            )
+            if(NOT _boot_result EQUAL 0)
+                message(FATAL_ERROR "vcpkg bootstrap failed.")
+            endif()
+        endif()
+    endif()
+
+    if(EXISTS "${_vcpkg_exe}")
+        message(STATUS "Installing zlib:${_vcpkg_triplet} via vcpkg")
+        execute_process(
+            COMMAND "${_vcpkg_exe}" install "zlib:${_vcpkg_triplet}" --disable-metrics
+            WORKING_DIRECTORY "${VCPKG_ROOT}"
+            RESULT_VARIABLE _install_result
+        )
+        if(NOT _install_result EQUAL 0)
+            message(WARNING "vcpkg install zlib failed — build will likely fail")
+        endif()
+        list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/${_vcpkg_triplet}")
+        find_package(ZLIB REQUIRED)
+    else()
+        message(FATAL_ERROR "Cannot find or bootstrap vcpkg. Set VCPKG_ROOT or install zlib manually.")
+    endif()
+endif()
+message(STATUS "ZLIB include: ${ZLIB_INCLUDE_DIRS}")
+
 add_library(avcodec SHARED ${AVCODEC_SRCS}
     ${FFMPEG_SRC}/libavcodec/opus/dec.c)
 set_target_properties(avcodec PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-set(ZLIB_INCLUDE "${FFMPEG_SRC}/../deps/zlib/build/native/include")
-set(ZLIB_LIB     "${FFMPEG_SRC}/../deps/zlib/build/native/lib_release/zlib.lib")
 
 target_include_directories(avcodec PRIVATE
     ${CMAKE_BINARY_DIR}
     ${FFMPEG_SRC}
     ${FFMPEG_SRC}/libavcodec
     ${FFMPEG_SRC}/compat/atomics/win32
-    ${ZLIB_INCLUDE}
+    ${ZLIB_INCLUDE_DIRS}
 )
-target_link_libraries(avcodec PRIVATE avutil swresample ws2_32 ${ZLIB_LIB})
+target_link_libraries(avcodec PRIVATE avutil swresample ws2_32 ZLIB::ZLIB)
 
 # ---------------------------------------------------------------------------
 # Summary
