@@ -13,20 +13,117 @@ set(FFMPEG_SRC ${CMAKE_SOURCE_DIR}/FFmpeg)
 option(FFMPEG_ENABLE_NASM "Use NASM for x86_64 assembly optimizations" ON)
 
 # ---------------------------------------------------------------------------
-# NASM detection
+# vcpkg bootstrap/install helpers  (idempotent; used for NASM/YASM and zlib)
+# Sets _vcpkg_root, _vcpkg_exe, _vcpkg_triplet, _vcpkg_installed in caller scope.
+# ---------------------------------------------------------------------------
+macro(_ffmpeg_vcpkg_ensure)
+    if(NOT DEFINED _vcpkg_bootstrapped)
+        if(DEFINED ENV{VCPKG_ROOT})
+            set(_vcpkg_root "$ENV{VCPKG_ROOT}")
+        else()
+            set(_vcpkg_root "${CMAKE_SOURCE_DIR}/vcpkg")
+        endif()
+        if(WIN32)
+            set(_vcpkg_exe     "${_vcpkg_root}/vcpkg.exe")
+            set(_vcpkg_boot    "${_vcpkg_root}/bootstrap-vcpkg.bat")
+            set(_vcpkg_triplet "x64-windows")
+        else()
+            set(_vcpkg_exe     "${_vcpkg_root}/vcpkg")
+            set(_vcpkg_boot    "${_vcpkg_root}/bootstrap-vcpkg.sh")
+            set(_vcpkg_triplet "x64-linux")
+        endif()
+        set(_vcpkg_installed "${_vcpkg_root}/installed/${_vcpkg_triplet}")
+        if(NOT EXISTS "${_vcpkg_exe}")
+            find_package(Git QUIET)
+            if(Git_FOUND AND NOT EXISTS "${_vcpkg_root}/.git")
+                message(STATUS "Cloning vcpkg into ${_vcpkg_root}")
+                execute_process(
+                    COMMAND ${GIT_EXECUTABLE} clone --depth 1 https://github.com/microsoft/vcpkg.git "${_vcpkg_root}"
+                    RESULT_VARIABLE _vcpkg_clone_result
+                )
+                if(NOT _vcpkg_clone_result EQUAL 0)
+                    message(FATAL_ERROR "Failed to clone vcpkg. Set VCPKG_ROOT or install dependencies manually.")
+                endif()
+            endif()
+            if(EXISTS "${_vcpkg_boot}")
+                message(STATUS "Bootstrapping vcpkg")
+                execute_process(
+                    COMMAND "${_vcpkg_boot}" -disableMetrics
+                    WORKING_DIRECTORY "${_vcpkg_root}"
+                    RESULT_VARIABLE _vcpkg_boot_result
+                )
+                if(NOT _vcpkg_boot_result EQUAL 0)
+                    message(FATAL_ERROR "vcpkg bootstrap failed.")
+                endif()
+            endif()
+        endif()
+        set(_vcpkg_bootstrapped 1)
+    endif()
+endmacro()
+
+macro(_ffmpeg_vcpkg_install _pkg)
+    _ffmpeg_vcpkg_ensure()
+    if(EXISTS "${_vcpkg_exe}")
+        message(STATUS "Installing ${_pkg}:${_vcpkg_triplet} via vcpkg")
+        execute_process(
+            COMMAND "${_vcpkg_exe}" install "${_pkg}:${_vcpkg_triplet}" --disable-metrics
+            WORKING_DIRECTORY "${_vcpkg_root}"
+            RESULT_VARIABLE _vcpkg_install_result
+        )
+        if(NOT _vcpkg_install_result EQUAL 0)
+            message(WARNING "vcpkg install ${_pkg} failed")
+        endif()
+        list(PREPEND CMAKE_PREFIX_PATH "${_vcpkg_installed}")
+    else()
+        message(FATAL_ERROR "vcpkg not available. Set VCPKG_ROOT or install ${_pkg} manually.")
+    endif()
+endmacro()
+
+# ---------------------------------------------------------------------------
+# NASM / YASM detection  (global search first; fall back to vcpkg YASM)
 # ---------------------------------------------------------------------------
 if(FFMPEG_ENABLE_NASM)
-    include(CheckLanguage)
-    check_language(ASM_NASM)
-    if(CMAKE_ASM_NASM_COMPILER)
+    find_program(FFMPEG_NASM_EXECUTABLE NAMES nasm)
+    find_program(FFMPEG_YASM_EXECUTABLE NAMES yasm)
+
+    if(FFMPEG_NASM_EXECUTABLE)
+        set(_asm_exe     "${FFMPEG_NASM_EXECUTABLE}")
+        set(_asm_is_yasm 0)
+        message(STATUS "NASM: ${FFMPEG_NASM_EXECUTABLE}")
+    elseif(FFMPEG_YASM_EXECUTABLE)
+        set(_asm_exe     "${FFMPEG_YASM_EXECUTABLE}")
+        set(_asm_is_yasm 1)
+        message(STATUS "YASM: ${FFMPEG_YASM_EXECUTABLE}")
+    else()
+        message(STATUS "NASM/YASM not found globally — fetching YASM from vcpkg")
+        _ffmpeg_vcpkg_install("yasm")
+        find_program(FFMPEG_YASM_EXECUTABLE
+            NAMES yasm
+            HINTS
+                "${_vcpkg_installed}/tools/yasm"
+                "${_vcpkg_installed}/tools"
+                "${_vcpkg_installed}/bin"
+            NO_DEFAULT_PATH
+        )
+        if(FFMPEG_YASM_EXECUTABLE)
+            set(_asm_exe     "${FFMPEG_YASM_EXECUTABLE}")
+            set(_asm_is_yasm 1)
+            message(STATUS "YASM (vcpkg): ${FFMPEG_YASM_EXECUTABLE}")
+        endif()
+    endif()
+
+    if(DEFINED _asm_exe)
+        set(CMAKE_ASM_NASM_COMPILER "${_asm_exe}" CACHE FILEPATH "ASM compiler (NASM or YASM)" FORCE)
         enable_language(ASM_NASM)
         set(HAVE_X86ASM 1)
-        # Format must be win64 for 64-bit Windows DLLs; DPIC is needed for shared libs
-        set(CMAKE_ASM_NASM_FLAGS "-f win64 -DWIN64 -DPIC")
-        message(STATUS "NASM: ${CMAKE_ASM_NASM_COMPILER} — assembly optimizations enabled")
+        if(_asm_is_yasm)
+            set(CMAKE_ASM_NASM_FLAGS "-f win64 -m amd64 -DWIN64 -DPIC")
+        else()
+            set(CMAKE_ASM_NASM_FLAGS "-f win64 -DWIN64 -DPIC")
+        endif()
     else()
         set(HAVE_X86ASM 0)
-        message(STATUS "NASM not found — assembly optimizations disabled")
+        message(STATUS "No assembler found — assembly optimizations disabled")
     endif()
 else()
     set(HAVE_X86ASM 0)
@@ -2049,66 +2146,11 @@ target_link_libraries(swresample PRIVATE avutil)
 # ---------------------------------------------------------------------------
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
-    message(STATUS "ZLIB not found via find_package — trying vcpkg")
-
-    if(NOT DEFINED VCPKG_ROOT AND DEFINED ENV{VCPKG_ROOT})
-        set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
-    elseif(NOT DEFINED VCPKG_ROOT)
-        set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/vcpkg")
-    endif()
-
-    if(WIN32)
-        set(_vcpkg_exe     "${VCPKG_ROOT}/vcpkg.exe")
-        set(_vcpkg_boot    "${VCPKG_ROOT}/bootstrap-vcpkg.bat")
-        set(_vcpkg_triplet "x64-windows")
-    else()
-        set(_vcpkg_exe     "${VCPKG_ROOT}/vcpkg")
-        set(_vcpkg_boot    "${VCPKG_ROOT}/bootstrap-vcpkg.sh")
-        set(_vcpkg_triplet "x64-linux")
-    endif()
-
-    if(NOT EXISTS "${_vcpkg_exe}")
-        find_package(Git QUIET)
-        if(Git_FOUND AND NOT EXISTS "${VCPKG_ROOT}/.git")
-            message(STATUS "Cloning vcpkg into ${VCPKG_ROOT}")
-            execute_process(
-                COMMAND ${GIT_EXECUTABLE} clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
-                RESULT_VARIABLE _clone_result
-            )
-            if(NOT _clone_result EQUAL 0)
-                message(FATAL_ERROR "Failed to clone vcpkg. Install vcpkg manually or set VCPKG_ROOT.")
-            endif()
-        endif()
-        if(EXISTS "${_vcpkg_boot}")
-            message(STATUS "Bootstrapping vcpkg")
-            execute_process(
-                COMMAND "${_vcpkg_boot}" -disableMetrics
-                WORKING_DIRECTORY "${VCPKG_ROOT}"
-                RESULT_VARIABLE _boot_result
-            )
-            if(NOT _boot_result EQUAL 0)
-                message(FATAL_ERROR "vcpkg bootstrap failed.")
-            endif()
-        endif()
-    endif()
-
-    if(EXISTS "${_vcpkg_exe}")
-        message(STATUS "Installing zlib:${_vcpkg_triplet} via vcpkg")
-        execute_process(
-            COMMAND "${_vcpkg_exe}" install "zlib:${_vcpkg_triplet}" --disable-metrics
-            WORKING_DIRECTORY "${VCPKG_ROOT}"
-            RESULT_VARIABLE _install_result
-        )
-        if(NOT _install_result EQUAL 0)
-            message(WARNING "vcpkg install zlib failed — build will likely fail")
-        endif()
-        list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/${_vcpkg_triplet}")
-        find_package(ZLIB REQUIRED)
-    else()
-        message(FATAL_ERROR "Cannot find or bootstrap vcpkg. Set VCPKG_ROOT or install zlib manually.")
-    endif()
+    message(STATUS "ZLIB not found globally — fetching from vcpkg")
+    _ffmpeg_vcpkg_install("zlib")
+    find_package(ZLIB REQUIRED)
 endif()
-message(STATUS "ZLIB include: ${ZLIB_INCLUDE_DIRS}")
+message(STATUS "ZLIB: ${ZLIB_INCLUDE_DIRS}")
 
 add_library(avcodec SHARED ${AVCODEC_SRCS}
     ${FFMPEG_SRC}/libavcodec/opus/dec.c)
