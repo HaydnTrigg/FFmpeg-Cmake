@@ -311,23 +311,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 if(MSVC)
     add_compile_options(
         $<$<COMPILE_LANGUAGE:C>:/MP>
-        $<$<COMPILE_LANGUAGE:C>:/W3>
-        $<$<COMPILE_LANGUAGE:C>:/wd4018>
-        $<$<COMPILE_LANGUAGE:C>:/wd4028>
-        $<$<COMPILE_LANGUAGE:C>:/wd4090>
-        $<$<COMPILE_LANGUAGE:C>:/wd4101>
-        $<$<COMPILE_LANGUAGE:C>:/wd4113>
-        $<$<COMPILE_LANGUAGE:C>:/wd4133>
-        $<$<COMPILE_LANGUAGE:C>:/wd4146>
-        $<$<COMPILE_LANGUAGE:C>:/wd4244>
-        $<$<COMPILE_LANGUAGE:C>:/wd4267>
-        $<$<COMPILE_LANGUAGE:C>:/wd4305>
-        $<$<COMPILE_LANGUAGE:C>:/wd4334>
-        $<$<COMPILE_LANGUAGE:C>:/wd4477>
-        $<$<COMPILE_LANGUAGE:C>:/wd4700>
-        $<$<COMPILE_LANGUAGE:C>:/wd4715>
-        $<$<COMPILE_LANGUAGE:C>:/wd4723>
-        $<$<COMPILE_LANGUAGE:C>:/wd4996>
+        $<$<COMPILE_LANGUAGE:C>:/W0>
+        $<$<COMPILE_LANGUAGE:C>:/w>
         $<$<COMPILE_LANGUAGE:C>:/std:c11>
         $<$<COMPILE_LANGUAGE:C>:/fp:fast>
     )
