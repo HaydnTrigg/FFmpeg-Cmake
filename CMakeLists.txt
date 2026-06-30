@@ -207,6 +207,7 @@ else()
 %define HAVE_AMD3DNOW_EXTERNAL   0
 %define HAVE_AMD3DNOWEXT_EXTERNAL 0
 %define HAVE_MMX_INLINE          0
+%define HAVE_X86_SSE2AVX         0
 ]=])
     # Patch the two arch flags that differ between Win32 and x64
     file(READ "${CMAKE_BINARY_DIR}/config.asm" _asm_tmp)
@@ -1158,9 +1159,6 @@ file(WRITE "${CMAKE_BINARY_DIR}/config_components.h" [=[
 #define CONFIG_SNOW_DECODER 1
 #define CONFIG_SNOW_ENCODER 1
 #define CONFIG_SOL_DPCM_DECODER 1
-#define CONFIG_SONIC_DECODER 1
-#define CONFIG_SONIC_ENCODER 1
-#define CONFIG_SONIC_LS_ENCODER 1
 #define CONFIG_SP5X_DECODER 1
 #define CONFIG_SPEEDHQ_DECODER 1
 #define CONFIG_SPEEDHQ_ENCODER 1
@@ -1212,12 +1210,6 @@ file(WRITE "${CMAKE_BINARY_DIR}/config_components.h" [=[
 #define CONFIG_V210_DECODER 1
 #define CONFIG_V210_ENCODER 1
 #define CONFIG_V210X_DECODER 1
-#define CONFIG_V308_DECODER 1
-#define CONFIG_V308_ENCODER 1
-#define CONFIG_V408_DECODER 1
-#define CONFIG_V408_ENCODER 1
-#define CONFIG_V410_DECODER 1
-#define CONFIG_V410_ENCODER 1
 #define CONFIG_VB_DECODER 1
 #define CONFIG_VBN_DECODER 1
 #define CONFIG_VBN_ENCODER 1
@@ -1883,9 +1875,6 @@ static const FFCodec * const codec_list[] = {
     &ff_tscc_decoder, &ff_tscc2_decoder, &ff_txd_decoder,
     &ff_ulti_decoder, &ff_utvideo_encoder, &ff_utvideo_decoder,
     &ff_v210_encoder, &ff_v210_decoder, &ff_v210x_decoder,
-    &ff_v308_encoder, &ff_v308_decoder,
-    &ff_v408_encoder, &ff_v408_decoder,
-    &ff_v410_encoder, &ff_v410_decoder,
     &ff_vb_decoder, &ff_vbn_encoder, &ff_vbn_decoder, &ff_vble_decoder,
     &ff_vc1_decoder, &ff_vc1image_decoder,
     &ff_vc2_encoder, &ff_vcr1_decoder,
@@ -1966,7 +1955,6 @@ static const FFCodec * const codec_list[] = {
     &ff_sbc_encoder, &ff_sbc_decoder,
     &ff_shorten_decoder, &ff_sipr_decoder, &ff_siren_decoder,
     &ff_smackaud_decoder,
-    &ff_sonic_encoder, &ff_sonic_decoder, &ff_sonic_ls_encoder,
     &ff_speex_decoder,
     &ff_tak_decoder,
     &ff_truehd_encoder, &ff_truehd_decoder,
