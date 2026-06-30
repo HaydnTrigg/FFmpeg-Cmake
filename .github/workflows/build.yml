@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.arch }} / ${{ matrix.config }}
+    name: ${{ matrix.arch }} / ${{ matrix.config }} / ${{ matrix.toolchain }}
     runs-on: windows-latest
     strategy:
       fail-fast: false

@@ -16,6 +16,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_definitions(__AVX10_2BF16INTRIN_H __AVX10_2_512BF16INTRIN_H)
 
+    # Clang 19/20 promoted -Wincompatible-pointer-types from a warning to a
+    # default-on error (GCC 14 C99-conformance parity). FFmpeg's Win32 atomics
+    # shim passes atomic_uint* (int*) to InterlockedExchangeAdd's volatile long*
+    # parameter — a benign int*/long* mismatch on Windows (both 32-bit). Downgrade
+    # it back to a warning so the Win32/ClangCL build isn't broken by the new default.
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-pointer-types>)
+
     # FFmpeg gives each library its own private copy of certain helper objects
     # (half2float.c, file_open.c, x86/emms.asm, ...). Because avutil is built with
     # WINDOWS_EXPORT_ALL_SYMBOLS, those internal ff_*/avpriv_* symbols are exported
@@ -1543,13 +1550,54 @@ set(_FFMPEG_COMPONENTS
     ADPCM_SWF_ENCODER
     ADPCM_YAMAHA_ENCODER
 )
+set(_FFMPEG_ENABLED_COMPONENTS "")
 foreach(_comp IN LISTS _FFMPEG_COMPONENTS)
     option(FFMPEG_CONFIG_${_comp} "Enable FFmpeg component ${_comp}" ${FFMPEG_USE_DEFAULT_CONFIG})
+    if(FFMPEG_CONFIG_${_comp})
+        list(APPEND _FFMPEG_ENABLED_COMPONENTS ${_comp})
+    endif()
 endforeach()
 
-# Helper: append a #define CONFIG_<name> with the option-driven value
+# ---------------------------------------------------------------------------
+# Subset builds (FFMPEG_USE_DEFAULT_CONFIG=OFF): resolve the avcodec dependency
+# closure now — before config_components.h is generated — so BOTH the internal
+# capability flags (below) and the libavcodec source list (later) reflect only
+# what the enabled components actually need. See cmake/ResolveAvcodecSrcs.cmake.
+# Sets AVCODEC_RESOLVED_C / AVCODEC_RESOLVED_ASM / AVCODEC_CLOSURE_CONFIGS.
+# ---------------------------------------------------------------------------
+if(NOT FFMPEG_USE_DEFAULT_CONFIG)
+    if(HAVE_X86ASM)
+        set(_ffmpeg_x86asm_flag 1)
+    else()
+        set(_ffmpeg_x86asm_flag 0)
+    endif()
+    include("${CMAKE_SOURCE_DIR}/cmake/ResolveAvcodecSrcs.cmake")
+    ffmpeg_resolve_avcodec_srcs(
+        "${FFMPEG_SRC}" "${CMAKE_BINARY_DIR}/config.h" "${_ffmpeg_x86asm_flag}"
+        AVCODEC_RESOLVED_C AVCODEC_RESOLVED_ASM AVCODEC_CLOSURE_CONFIGS
+        ${_FFMPEG_ENABLED_COMPONENTS})
+    list(LENGTH AVCODEC_RESOLVED_C _nc)
+    list(LENGTH AVCODEC_RESOLVED_ASM _na)
+    message(STATUS "avcodec subset: resolved ${_nc} C + ${_na} ASM sources")
+endif()
+
+# Helper: append a #define CONFIG_<name> with the option-driven value.
 macro(_emit_cfg _name)
     if(FFMPEG_CONFIG_${_name})
+        string(APPEND _cc "#define CONFIG_${_name} 1\n")
+    else()
+        string(APPEND _cc "#define CONFIG_${_name} 0\n")
+    endif()
+endmacro()
+
+# Helper for FFmpeg's internal capability flags (IDCTDSP, MPEGVIDEO, ADTS_HEADER,
+# ...). The full build force-enables them (everything is compiled). A subset must
+# instead follow the dependency closure, or base files reference helpers whose
+# sources weren't compiled. _full is the value used in default-config mode.
+macro(_emit_internal _name _full)
+    if(FFMPEG_USE_DEFAULT_CONFIG)
+        string(APPEND _cc "#define CONFIG_${_name} ${_full}\n")
+    elseif("${_name}" IN_LIST AVCODEC_CLOSURE_CONFIGS)
         string(APPEND _cc "#define CONFIG_${_name} 1\n")
     else()
         string(APPEND _cc "#define CONFIG_${_name} 0\n")
@@ -2448,34 +2496,46 @@ _emit_cfg(ADPCM_YAMAHA_ENCODER)
 string(APPEND _cc "\n")
 string(APPEND _cc [==[
 /* ---- Internal capability flags ---- */
-#define CONFIG_ERROR_RESILIENCE      1
 #define CONFIG_HARDCODED_TABLES      0
 #define CONFIG_FTRAPV                0
-#define CONFIG_FAANDCT               1
-#define CONFIG_FAANIDCT              1
-#define CONFIG_FDCTDSP               1
-#define CONFIG_IDCTDSP               1
-#define CONFIG_ME_CMP                1
-#define CONFIG_MPEGVIDEO             1
-#define CONFIG_MPEGVIDEODEC          1
-#define CONFIG_MPEGVIDEOENCDSP       1
-#define CONFIG_MSMPEG4DEC            1
-#define CONFIG_MSMPEG4ENC            1
-#define CONFIG_H264                  1
-#define CONFIG_H264_SEI              1
-#define CONFIG_H264_VUI_PARAMETERS   1
-#define CONFIG_HEVC                  1
-#define CONFIG_HEVC_SEI              1
-#define CONFIG_HEVC_VUI_PARAMETERS   1
-#define CONFIG_VVC_SEI               1
-#define CONFIG_AV1                   1
-#define CONFIG_ADTS_HEADER           1
-#define CONFIG_ATSC_A53              1
 #define CONFIG_DEFLATE_WRAPPER       1
 #define CONFIG_INFLATE_WRAPPER       1
-#define CONFIG_DIRAC_PARSE           1
-#define CONFIG_DVPROFILE             1
-#define CONFIG_PIXBLOCKDSP           1
+]==])
+# Codec/DSP-internal helpers: force-on for the full build (everything compiles),
+# but closure-driven for subset builds so base files don't reference helpers whose
+# sources weren't compiled. See _emit_internal / AVCODEC_CLOSURE_CONFIGS above.
+_emit_internal(ERROR_RESILIENCE    1)
+_emit_internal(FAANDCT             1)
+_emit_internal(FAANIDCT            1)
+_emit_internal(FDCTDSP             1)
+_emit_internal(IDCTDSP             1)
+_emit_internal(ME_CMP              1)
+_emit_internal(MPEGVIDEO           1)
+_emit_internal(MPEGVIDEODEC        1)
+_emit_internal(MPEGVIDEOENCDSP     1)
+_emit_internal(MSMPEG4DEC          1)
+_emit_internal(MSMPEG4ENC          1)
+_emit_internal(H264                1)
+_emit_internal(H264_SEI            1)
+_emit_internal(H264_VUI_PARAMETERS 1)
+_emit_internal(HEVC                1)
+_emit_internal(HEVC_SEI            1)
+_emit_internal(HEVC_VUI_PARAMETERS 1)
+_emit_internal(VVC_SEI             1)
+_emit_internal(AV1                 1)
+_emit_internal(ADTS_HEADER         1)
+_emit_internal(ATSC_A53            1)
+_emit_internal(DIRAC_PARSE         1)
+_emit_internal(DVPROFILE           1)
+_emit_internal(PIXBLOCKDSP         1)
+# These four codecs are registered unconditionally by the generated codec_list.c
+# (their entries were unguarded). They have no FFMPEG_CONFIG_* option, so define
+# the macros here: present in the full build, absent in a subset.
+_emit_internal(ALIAS_PIX_ENCODER   1)
+_emit_internal(ALIAS_PIX_DECODER   1)
+_emit_internal(AC3_ENCODER         1)
+_emit_internal(AC3_FIXED_ENCODER   1)
+string(APPEND _cc [==[
 #define CONFIG_ENCODER               1
 #define CONFIG_ENCODER_DEVICE        1
 #define CONFIG_ENCODER_FRAMES        1
@@ -2635,8 +2695,12 @@ static const FFCodec * const codec_list[] = {
     #if CONFIG_AIC_DECODER
         &ff_aic_decoder,
     #endif
-    &ff_alias_pix_encoder,
-    &ff_alias_pix_decoder,
+    #if CONFIG_ALIAS_PIX_ENCODER
+        &ff_alias_pix_encoder,
+    #endif
+    #if CONFIG_ALIAS_PIX_DECODER
+        &ff_alias_pix_decoder,
+    #endif
     #if CONFIG_AGM_DECODER
         &ff_agm_decoder,
     #endif
@@ -3700,11 +3764,15 @@ static const FFCodec * const codec_list[] = {
     #if CONFIG_AAC_LATM_DECODER
         &ff_aac_latm_decoder,
     #endif
-    &ff_ac3_encoder,
+    #if CONFIG_AC3_ENCODER
+        &ff_ac3_encoder,
+    #endif
     #if CONFIG_AC3_DECODER
         &ff_ac3_decoder,
     #endif
-    &ff_ac3_fixed_encoder,
+    #if CONFIG_AC3_FIXED_ENCODER
+        &ff_ac3_fixed_encoder,
+    #endif
     #if CONFIG_AC3_FIXED_DECODER
         &ff_ac3_fixed_decoder,
     #endif
@@ -5118,15 +5186,43 @@ if(MSVC AND HAVE_X86ASM)
 endif()
 target_include_directories(avutil PRIVATE
     ${CMAKE_BINARY_DIR}
-    ${FFMPEG_SRC}
     ${FFMPEG_SRC}/libavutil/x86
     ${FFMPEG_SRC}/compat/atomics/win32
+)
+target_include_directories(avutil PUBLIC
+    ${FFMPEG_SRC}
 )
 target_link_libraries(avutil PRIVATE ws2_32 ole32 user32 bcrypt)
 
 # ============================================================
 # libavcodec
 # ============================================================
+# ---------------------------------------------------------------------------
+# avcodec source selection
+#
+# Default config (everything enabled): glob the whole tree. config_components.h
+# gates the code and every cross-reference resolves because all definitions are
+# present.
+#
+# Subset config (FFMPEG_USE_DEFAULT_CONFIG=OFF): globbing breaks — disabled
+# components' files still compile and reference symbols that were #if'd out,
+# producing undefined symbols at link time. Instead, compile exactly the files
+# FFmpeg's own configure+make would for the enabled components: base OBJS plus
+# the dependency closure (configure *_select/*_deps) mapped through the
+# libavcodec Makefiles. cmake/ResolveAvcodecSrcs.cmake does that resolution.
+# ---------------------------------------------------------------------------
+if(NOT FFMPEG_USE_DEFAULT_CONFIG)
+    # AVCODEC_RESOLVED_C / AVCODEC_RESOLVED_ASM were produced by the resolver run
+    # earlier (just after the component options), so config_components.h and this
+    # source list stay in lock-step.
+    set(AVCODEC_SRCS ${AVCODEC_RESOLVED_C})
+    if(HAVE_X86ASM)
+        list(APPEND AVCODEC_SRCS ${AVCODEC_RESOLVED_ASM})
+    endif()
+    # Platform stub objects are in FFmpeg's base OBJS but compile to nothing when
+    # their CONFIG is off; the full build omits them too. Drop them for parity.
+    list(FILTER AVCODEC_SRCS EXCLUDE REGEX "/(d3d11va|mediacodec|jni|qsv_api)\\.c$")
+else()
 file(GLOB AVCODEC_SRCS
     ${FFMPEG_SRC}/libavcodec/*.c
     ${FFMPEG_SRC}/libavcodec/aac/*.c
@@ -5208,6 +5304,7 @@ else()
     # NASM symbols. No-op stubs satisfy the linker without any source modifications.
     list(APPEND AVCODEC_SRCS ${FFMPEG_SRC}/../x86_no_asm_stubs.c)
 endif()
+endif()  # FFMPEG_USE_DEFAULT_CONFIG (glob) vs subset resolver
 
 # ============================================================
 # libswresample  (needed by avcodec for the opus decoder)
@@ -5255,9 +5352,11 @@ if(MSVC AND HAVE_X86ASM)
 endif()
 target_include_directories(swresample PRIVATE
     ${CMAKE_BINARY_DIR}
-    ${FFMPEG_SRC}
     ${FFMPEG_SRC}/libswresample
     ${FFMPEG_SRC}/compat/atomics/win32
+)
+target_include_directories(swresample PUBLIC
+    ${FFMPEG_SRC}
 )
 target_link_libraries(swresample PRIVATE avutil)
 
@@ -5315,8 +5414,14 @@ if(MSVC AND HAVE_X86ASM)
     unset(_avcodec_conflict_basenames)
 endif()
 
-add_library(avcodec SHARED ${AVCODEC_SRCS}
-    ${FFMPEG_SRC}/libavcodec/opus/dec.c)
+# opus/dec.c is excluded from the glob (needs libswresample) and re-added here for
+# the full build. The subset resolver already includes it iff the opus decoder is
+# enabled, so only add it back in default-config mode.
+set(_avcodec_extra_srcs "")
+if(FFMPEG_USE_DEFAULT_CONFIG)
+    set(_avcodec_extra_srcs ${FFMPEG_SRC}/libavcodec/opus/dec.c)
+endif()
+add_library(avcodec SHARED ${AVCODEC_SRCS} ${_avcodec_extra_srcs})
 set_target_properties(avcodec PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 if(MSVC AND HAVE_X86ASM)
     set_target_properties(avcodec PROPERTIES VS_USER_PROPS "${CMAKE_BINARY_DIR}/nasm_vs_fix.props")
