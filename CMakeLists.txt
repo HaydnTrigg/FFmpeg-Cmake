@@ -3,6 +3,29 @@ project(FFmpeg LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# ---------------------------------------------------------------------------
+# Clang (incl. ClangCL toolset on Visual Studio) workaround
+# ---------------------------------------------------------------------------
+# Clang 20 — the LLVM bundled with Visual Studio 2026 — ships a broken
+# avx10_2bf16intrin.h / avx10_2_512bf16intrin.h. immintrin.h pulls these in
+# unconditionally (the include is guarded only by !defined(__SCE__)), and Clang
+# always *parses* the bodies of target-attribute intrinsic functions, so the
+# header bug is a hard compile error regardless of the target ISA flags. FFmpeg
+# uses no AVX10.2 BF16 intrinsics, so skip those headers by predefining their
+# include guards. Harmless on Clang versions where the header is correct.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_definitions(__AVX10_2BF16INTRIN_H __AVX10_2_512BF16INTRIN_H)
+
+    # FFmpeg gives each library its own private copy of certain helper objects
+    # (half2float.c, file_open.c, x86/emms.asm, ...). Because avutil is built with
+    # WINDOWS_EXPORT_ALL_SYMBOLS, those internal ff_*/avpriv_* symbols are exported
+    # from avutil.dll, so avcodec both defines them locally and imports them from
+    # avutil. MSVC link.exe silently keeps the local definition; lld-link (used by
+    # the ClangCL toolset) instead errors on the duplicate. /FORCE:MULTIPLE makes
+    # lld-link match link.exe: the first (local) definition wins.
+    add_link_options("/FORCE:MULTIPLE")
+endif()
+
 # FFmpeg source tree lives one level below this CMakeLists.txt
 set(FFMPEG_SRC ${CMAKE_SOURCE_DIR}/FFmpeg)
 
