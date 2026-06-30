@@ -14,6 +14,30 @@ FFmpeg is a collection of libraries and tools to process multimedia content such
 - Automatic NASM acquisition via vcpkg for x86/x64 SIMD assembly optimisations
 - Support for Win32, x64, and ARM64 targets
 - GitHub Actions CI that builds all three architectures across all four CMake build types
+- Per-component build configuration: every codec, parser and bitstream filter is exposed as a CMake option
+
+## Configuring which components are built
+
+Every FFmpeg component (decoder, encoder, parser, bitstream filter, …) is exposed as a
+`FFMPEG_CONFIG_<NAME>` CMake boolean that mirrors the corresponding `CONFIG_<NAME>` macro.
+Disabling an option both sets `CONFIG_<NAME> 0` in the generated `config_components.h` and
+removes the component from the generated `codec_list.c` / `parser_list.c` / `bsf_list.c`, so it
+is genuinely excluded (no unresolved-symbol link errors).
+
+- `FFMPEG_USE_DEFAULT_CONFIG` (default `ON`) controls the default state of every component option.
+  Leave it on to build everything (the default), or set it to `OFF` to start from a blank slate and
+  opt in to only the components you need.
+
+```sh
+# Default: build all components
+cmake -B Build
+
+# Build only what you opt into
+cmake -B Build -DFFMPEG_USE_DEFAULT_CONFIG=OFF -DFFMPEG_CONFIG_AAC_DECODER=ON -DFFMPEG_CONFIG_H264_DECODER=ON
+
+# Build everything except one codec
+cmake -B Build -DFFMPEG_CONFIG_AAC_DECODER=OFF
+```
 
 ## Libraries
 
