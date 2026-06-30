@@ -76,14 +76,17 @@ macro(_ffmpeg_vcpkg_ensure)
         if(WIN32)
             set(_vcpkg_exe  "${_vcpkg_root}/vcpkg.exe")
             set(_vcpkg_boot "${_vcpkg_root}/bootstrap-vcpkg.bat")
-            # Tools (NASM) always from x64-windows; libraries match the target platform
+            # Tools (NASM) always from x64-windows; libraries match the target platform.
+            # Libraries use the *-static-md triplet so zlib links statically (no
+            # zlib1.dll to ship) while still using the dynamic CRT (/MD) — matching
+            # this project's runtime. Plain *-static (/MT) would clash with /MD.
             set(_vcpkg_tool_triplet "x64-windows")
             if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
-                set(_vcpkg_triplet "x86-windows")
+                set(_vcpkg_triplet "x86-windows-static-md")
             elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
-                set(_vcpkg_triplet "arm64-windows")
+                set(_vcpkg_triplet "arm64-windows-static-md")
             else()
-                set(_vcpkg_triplet "x64-windows")
+                set(_vcpkg_triplet "x64-windows-static-md")
             endif()
         else()
             set(_vcpkg_exe            "${_vcpkg_root}/vcpkg")
@@ -5356,7 +5359,14 @@ target_link_libraries(swresample PRIVATE avutil)
 # ---------------------------------------------------------------------------
 # Ensure the platform-specific vcpkg library path is searched first for ZLIB
 _ffmpeg_vcpkg_ensure()
+# vcpkg keeps debug libs under <triplet>/debug/lib. Add it (then the release dir,
+# so release stays first) so FindZLIB locates the debug static lib (zsd) for Debug
+# builds — otherwise it falls back to the release /MD lib and mixes it into /MDd.
+list(PREPEND CMAKE_PREFIX_PATH "${_vcpkg_installed}/debug")
 list(PREPEND CMAKE_PREFIX_PATH "${_vcpkg_installed}")
+# Prefer the static zlib (the vcpkg *-static-md triplet ships only the static lib;
+# this also keeps a global find from picking up a zlib import lib / DLL).
+set(ZLIB_USE_STATIC_LIBS ON)
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
     message(STATUS "ZLIB not found globally — fetching from vcpkg")
