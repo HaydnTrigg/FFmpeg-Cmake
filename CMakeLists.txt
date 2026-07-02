@@ -133,8 +133,13 @@ macro(_ffmpeg_vcpkg_install _pkg)
         # tree, finds the parent's vcpkg.json, enters manifest mode and rejects the package
         # argument ("vcpkg install does not support individual package arguments").
         # --vcpkg-root pins the install to THIS project's local vcpkg/installed tree.
+        # --host-triplet pins vcpkg's host-tool (vcpkg-cmake, etc.) installs to the
+        # x64-windows toolchain. Without this vcpkg defaults the host triplet to the
+        # host CPU (arm64-windows on an ARM64 Windows machine), and VS 18 has no
+        # arm64_arm64 toolchain — compiler-hash detection fails and the install aborts.
         execute_process(
             COMMAND "${_vcpkg_exe}" install "${_pkg}:${_vcpkg_triplet}"
+                    --host-triplet "${_vcpkg_tool_triplet}"
                     --classic --vcpkg-root "${_vcpkg_root}" --disable-metrics
             WORKING_DIRECTORY "${_vcpkg_root}"
             RESULT_VARIABLE _vcpkg_install_result
